@@ -1,88 +1,75 @@
 import streamlit as st
 import pandas as pd
 import requests
-from tqdm import tqdm
 
-# Configurazione Streamlit
-st.set_page_config(page_title="Technical Stock Screener - TAAPI.io", layout="wide")
-st.title("📊 Technical Stock Screener (taapi.io API)")
+st.title("📊 Technical Stock Screener (Alpha Vantage API)")
 
-# API Token
-api_token = st.secrets["TAAPI_API_KEY"] if "TAAPI_API_KEY" in st.secrets else "<YOUR_API_TOKEN_HERE>"
+# API Key da Streamlit Secrets (più sicuro) - fallback al valore hardcoded se vuoi testare in locale
+api_key = st.secrets.get("alpha_vantage_api_key", "2QJ43KJ9AHL6I7WD")
 
-# Funzione per ottenere simboli supportati
-@st.cache_data
-def fetch_symbols():
-    url = 'https://api.taapi.io/exchange-symbols'
-    params = {
-        "secret": api_token,
-        "type": "stocks"
+# Input simbolo azionario
+symbol = st.text_input("Inserisci il simbolo azionario (es. AAPL, MSFT)", "AAPL")
+
+# Intervallo dati e indicatori tecnici da mostrare
+interval = st.selectbox("Seleziona l'intervallo", ["daily", "weekly", "monthly"])
+
+if st.button("Mostra dati e indicatori"):
+
+    # Mappa funzione API Alpha Vantage in base all'intervallo scelto
+    function_map = {
+        "daily": "TIME_SERIES_DAILY_ADJUSTED",
+        "weekly": "TIME_SERIES_WEEKLY_ADJUSTED",
+        "monthly": "TIME_SERIES_MONTHLY_ADJUSTED"
     }
-    response = requests.get(url, params=params)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        st.error("Failed to fetch symbols from taapi.io API.")
-        return []
+    function = function_map[interval]
 
-# Otteniamo simboli disponibili
-symbols = fetch_symbols()
-
-if not symbols:
-    st.stop()
-
-# Sidebar per selezione simboli
-symbol_options = [s['symbol'] for s in symbols]
-selected_symbols = st.sidebar.multiselect("Select Symbols", symbol_options, default=symbol_options[:5])
-
-# Selezione intervallo temporale
-interval = st.sidebar.selectbox("Select Interval", ["1h", "4h", "1d"])
-
-# Selezione indicatore
-indicator = st.sidebar.selectbox("Select Technical Indicator", ["rsi", "macd", "ema"])
-
-# Parametri RSI
-if indicator == "rsi":
-    rsi_lower = st.sidebar.slider("RSI Lower Threshold", 0, 50, 30)
-    rsi_upper = st.sidebar.slider("RSI Upper Threshold", 50, 100, 70)
-
-# Funzione per ottenere indicatori da taapi.io
-def fetch_indicator(symbol, interval, indicator):
-    url = f"https://api.taapi.io/{indicator}"
+    url = "https://www.alphavantage.co/query"
     params = {
-        "secret": api_token,
-        "exchange": "stocks",
+        "function": function,
         "symbol": symbol,
-        "interval": interval
+        "apikey": api_key,
+        "outputsize": "compact"
     }
+
     response = requests.get(url, params=params)
-    if response.status_code == 200:
-        return response.json()
+    data = response.json()
+
+    # Controlla se la risposta ha i dati
+    time_series_key = None
+    for key in data.keys():
+        if "Time Series" in key:
+            time_series_key = key
+            break
+
+    if time_series_key:
+        df = pd.DataFrame.from_dict(data[time_series_key], orient="index", dtype=float)
+        df.index = pd.to_datetime(df.index)
+        df.sort_index(inplace=True)
+
+        st.subheader(f"📈 Dati {interval} per {symbol.upper()}")
+        st.dataframe(df)
+
+        # Grafico prezzo di chiusura adjusted
+        st.line_chart(df["5. adjusted close"])
+
+        # Calcolo indicatori tecnici base (es. SMA 10 e RSI 14)
+
+        # SMA 10
+        df['SMA_10'] = df["5. adjusted close"].rolling(window=10).mean()
+
+        # RSI 14 (semplice calcolo)
+        delta = df["5. adjusted close"].diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        rs = avg_gain / avg_loss
+        df['RSI_14'] = 100 - (100 / (1 + rs))
+
+        st.subheader("Indicatori Tecnici")
+        st.line_chart(df[['SMA_10', 'RSI_14']].dropna())
+
     else:
-        return None
+        st.error("❌ Errore: simbolo non trovato o limite API superato.")
 
-# Elaborazione dati
-results = []
-
-with st.spinner("Fetching indicator data..."):
-    for symbol in tqdm(selected_symbols):
-        data = fetch_indicator(symbol, interval, indicator)
-        if data and 'value' in data:
-            entry = {"Symbol": symbol, "Indicator Value": data['value']}
-            if indicator == "rsi":
-                if rsi_lower <= data['value'] <= rsi_upper:
-                    results.append(entry)
-            else:
-                results.append(entry)
-
-# Visualizzazione risultati
-if results:
-    st.subheader("📋 Filtered Results")
-    st.dataframe(pd.DataFrame(results), use_container_width=True)
-else:
-    st.info("No stocks met the filter criteria.")
-
-# Footer
-st.markdown("---")
-st.markdown("📄 **Technical Stock Screener using taapi.io API, Streamlit & Python**")
 
